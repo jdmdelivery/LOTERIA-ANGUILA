@@ -38,7 +38,7 @@ class ConectateAnguillaResultCollector:
         db.notify_admin(level, message)
 
     def fetch_sessions(self, when: Optional[datetime] = None) -> tuple[list, bytes, str]:
-        when = when or datetime.utcnow().replace(tzinfo=pytz.UTC)
+        when = when or datetime.now(pytz.UTC)
         q = urllib.parse.urlencode({"date": when.strftime("%Y-%m-%dT%H:%M:%S.000Z")})
         url = f"{config.API_SESSIONS_URL}?{q}"
         last_err = None
@@ -133,7 +133,7 @@ class ConectateAnguillaResultCollector:
             if row:
                 try:
                     locked = datetime.fromisoformat(row["locked_at"].replace("Z", "+00:00"))
-                    if (datetime.utcnow().replace(tzinfo=pytz.UTC) - locked).total_seconds() < 90:
+                    if (datetime.now(pytz.UTC) - locked).total_seconds() < 90:
                         return False
                 except Exception:
                     return False
