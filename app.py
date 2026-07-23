@@ -14102,6 +14102,32 @@ def _resultados_ensure_normalized_unique(cur):
         log.warning("_resultados_ensure_normalized_unique index: %s", ex)
 
 
+def _init_db_ensure_columns(cur, table, columns):
+    """
+    Asegura columnas en tablas ya existentes (CREATE IF NOT EXISTS no altera esquema viejo).
+    columns: iterable de (nombre, tipo_sql) p.ej. ("banca_id", "INTEGER").
+    En Postgres usa ADD COLUMN IF NOT EXISTS; en SQLite intenta ADD y ignora si ya existe.
+    """
+    is_pg = bool(os.environ.get("DATABASE_URL"))
+    table = str(table or "").strip()
+    if not table or not columns:
+        return
+    for col_name, col_type in columns:
+        name = str(col_name or "").strip()
+        typ = str(col_type or "").strip()
+        if not name or not typ:
+            continue
+        try:
+            if is_pg:
+                cur.execute(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {typ}"
+                )
+            else:
+                cur.execute(_sql(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))
+        except Exception as e:
+            log.debug("init_db ensure column %s.%s: %s", table, name, e)
+
+
 # =====================================================
 # INIT_DB - CREAR TABLAS SOLO DE ESTA APP (Render PostgreSQL)
 # Esta app usa ÚNICAMENTE estas tablas. Ignora cualquier otra tabla en la BD.
@@ -14350,17 +14376,25 @@ def _init_db_impl():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    for _ln_col in (
-        "ALTER TABLE limites_numeros ADD COLUMN admin_id INTEGER",
-        "ALTER TABLE limites_numeros ADD COLUMN usuario_id INTEGER DEFAULT 0",
-        "ALTER TABLE limites_numeros ADD COLUMN fecha_rd TEXT DEFAULT ''",
-        "ALTER TABLE limites_numeros ADD COLUMN activo INTEGER DEFAULT 1",
-        "ALTER TABLE limites_numeros ADD COLUMN updated_at TIMESTAMP",
-    ):
-        try:
-            cur.execute(_sql(_ln_col))
-        except Exception:
-            pass
+    # Si la tabla ya existía en Postgres con esquema incompleto, CREATE IF NOT EXISTS no la repara.
+    _init_db_ensure_columns(
+        cur,
+        "limites_numeros",
+        (
+            ("id", "SERIAL" if os.environ.get("DATABASE_URL") else "INTEGER"),
+            ("banca_id", "INTEGER"),
+            ("lottery", "TEXT"),
+            ("draw", "TEXT DEFAULT ''"),
+            ("numero", "TEXT"),
+            ("limite", "NUMERIC DEFAULT 250"),
+            ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("admin_id", "INTEGER"),
+            ("usuario_id", "INTEGER DEFAULT 0"),
+            ("fecha_rd", "TEXT DEFAULT ''"),
+            ("activo", "INTEGER DEFAULT 1"),
+            ("updated_at", "TIMESTAMP"),
+        ),
+    )
     for _ln_idx in (
         "CREATE INDEX IF NOT EXISTS idx_limites_numeros_banca ON limites_numeros (banca_id)",
         "CREATE INDEX IF NOT EXISTS idx_limites_numeros_lottery ON limites_numeros (lottery)",
@@ -15203,35 +15237,61 @@ def _init_db_impl():
             motivo_reversion TEXT
         )
     """)
+    _init_db_ensure_columns(
+        cur,
+        "pagos_premios",
+        (
+            ("ticket_id", "INTEGER"),
+            ("monto", "NUMERIC"),
+            ("cajero", "TEXT"),
+            ("cajero_id", "INTEGER"),
+            ("fecha", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("revertido", "INTEGER NOT NULL DEFAULT 0"),
+            ("fecha_reversion", "TIMESTAMP"),
+            ("revertido_por", "TEXT"),
+            ("motivo_reversion", "TEXT"),
+            ("premio_id", "INTEGER"),
+        ),
+    )
     for _pp_mig in (
-        "ALTER TABLE pagos_premios ADD COLUMN cajero_id INTEGER",
-        "ALTER TABLE pagos_premios ADD COLUMN revertido INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE pagos_premios ADD COLUMN fecha_reversion TIMESTAMP",
-        "ALTER TABLE pagos_premios ADD COLUMN revertido_por TEXT",
-        "ALTER TABLE pagos_premios ADD COLUMN motivo_reversion TEXT",
         "CREATE INDEX IF NOT EXISTS idx_pagos_premios_cajero_id ON pagos_premios(cajero_id)",
     ):
         try:
             cur.execute(_pp_mig)
         except Exception as _e_pp_col:
             log.debug("init_db pagos_premios col: %s", _e_pp_col)
+    # Backfill cajero_id: primero desde tickets; si existe columna legacy `cajero`, también por username.
     try:
         cur.execute(
             _sql(
                 """
                 UPDATE pagos_premios
-                SET cajero_id = COALESCE(
-                    (SELECT t.cajero_id FROM tickets t WHERE t.id = pagos_premios.ticket_id LIMIT 1),
-                    (SELECT u.id FROM users u
-                     WHERE lower(trim(COALESCE(u.username, ''))) = lower(trim(COALESCE(pagos_premios.cajero, '')))
-                     LIMIT 1)
+                SET cajero_id = (
+                    SELECT t.cajero_id FROM tickets t WHERE t.id = pagos_premios.ticket_id LIMIT 1
                 )
                 WHERE cajero_id IS NULL
                 """
             )
         )
     except Exception as e:
-        log.warning("init_db backfill pagos_premios.cajero_id: %s", e)
+        log.warning("init_db backfill pagos_premios.cajero_id (tickets): %s", e)
+    try:
+        cur.execute(
+            _sql(
+                """
+                UPDATE pagos_premios
+                SET cajero_id = (
+                    SELECT u.id FROM users u
+                     WHERE lower(trim(COALESCE(u.username, ''))) = lower(trim(COALESCE(pagos_premios.cajero, '')))
+                     LIMIT 1
+                )
+                WHERE cajero_id IS NULL
+                """
+            )
+        )
+    except Exception as e:
+        # Esquema solo con cajero_id (sin columna texto `cajero`) — normal en Postgres nuevo.
+        log.debug("init_db backfill pagos_premios.cajero_id (username): %s", e)
     for _pp_idx in (
         "CREATE INDEX IF NOT EXISTS idx_pagos_premios_ticket_id ON pagos_premios(ticket_id)",
         "CREATE INDEX IF NOT EXISTS idx_pagos_premios_ticket_revertido ON pagos_premios(ticket_id, revertido)",
@@ -15606,6 +15666,18 @@ def _init_db_impl():
             fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _init_db_ensure_columns(
+        cur,
+        "movimientos_caja",
+        (
+            ("id", "SERIAL" if os.environ.get("DATABASE_URL") else "INTEGER"),
+            ("cajero_id", "TEXT"),
+            ("tipo", "TEXT"),
+            ("monto", "REAL"),
+            ("descripcion", "TEXT"),
+            ("fecha", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+        ),
+    )
     for _mc_idx in (
         "CREATE INDEX IF NOT EXISTS idx_movimientos_caja_fecha ON movimientos_caja(fecha DESC)",
         "CREATE INDEX IF NOT EXISTS idx_movimientos_caja_cajero ON movimientos_caja(cajero_id)",
