@@ -1,0 +1,27 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local DB and research bulk
+data/*.db
+data/*.db-*
+research/conectate_raw/
+research/analysis/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Test artifacts
+.coverage
+htmlcov/
+.pytest_cache/

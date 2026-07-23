@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h1>Resultados / Colector</h1>
+  <form method="post" class="grid3">
+    <input type="hidden" name="action" value="collect"/>
+    <select name="sorteo_code">
+      {% for s in sources %}<option value="{{ s.code }}">{{ s.nombre }} ({{ s.estado_fuente }})</option>{% endfor %}
+    </select>
+    <input type="date" name="draw_date" value="{{ today }}"/>
+    <button type="submit">Colectar ahora (doble lectura)</button>
+  </form>
+
+  <h2>Entrada manual</h2>
+  <form method="post" class="grid5">
+    <input type="hidden" name="action" value="manual"/>
+    <select name="sorteo_code">
+      {% for s in sources %}<option value="{{ s.code }}">{{ s.nombre }}</option>{% endfor %}
+    </select>
+    <input type="date" name="draw_date" value="{{ today }}"/>
+    <input name="primera" placeholder="1ª" maxlength="2" required/>
+    <input name="segunda" placeholder="2ª" maxlength="2" required/>
+    <input name="tercera" placeholder="3ª" maxlength="2" required/>
+    <button type="submit">Confirmar manual</button>
+  </form>
+
+  <h2>Últimos resultados</h2>
+  <table>
+    <tr><th>Fecha</th><th>Sorteo</th><th>Números</th><th>Estado</th><th>Fuente</th></tr>
+    {% for r in results %}
+    <tr>
+      <td>{{ r.draw_date }}</td>
+      <td>{{ r.sorteo_code }}</td>
+      <td>{{ r.primera }}-{{ r.segunda }}-{{ r.tercera }}</td>
+      <td>{{ r.status }}</td>
+      <td>{{ r.source }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Salud colector</h2>
+  <table>
+    <tr><th>Sorteo</th><th>Última</th><th>Estado</th><th>Error</th></tr>
+    {% for h in health %}
+    <tr><td>{{ h.sorteo_code }}</td><td>{{ h.last_run_at }}</td><td>{{ h.status }}</td><td>{{ h.last_error }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Notificaciones</h2>
+  <ul>
+    {% for n in notes %}
+    <li>[{{ n.level }}] {{ n.created_at }} — {{ n.message }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

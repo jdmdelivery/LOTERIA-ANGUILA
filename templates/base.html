@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{{ bank }}</title>
+  <link rel="stylesheet" href="/static/app.css"/>
+</head>
+<body>
+  {% if session.get('user_id') %}
+  <header class="top">
+    <div class="brand">{{ bank }}</div>
+    <nav>
+      <a href="{{ url_for('venta') }}">Venta</a>
+      <a href="{{ url_for('premios') }}">Premios</a>
+      {% if role == 'admin' %}
+      <a href="{{ url_for('admin_resultados') }}">Resultados</a>
+      {% endif %}
+      <span class="user">{{ user }}</span>
+      <a href="{{ url_for('logout') }}">Salir</a>
+    </nav>
+  </header>
+  {% endif %}
+  <main class="wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for cat, msg in messages %}
+          <div class="flash {{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
