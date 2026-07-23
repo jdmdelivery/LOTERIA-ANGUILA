@@ -4088,8 +4088,13 @@ def _conectate_label_to_internal_key(text, ref_fecha_iso=None):
     """
     if not text:
         return None
-    tl = str(text).strip().lower()
+    # Conectate a veces manda doble espacio (ej. «Anguila 8:00  AM») — colapsar antes de mapear.
+    text = re.sub(r"\s+", " ", str(text).strip())
+    if not text:
+        return None
+    tl = text.lower()
     nt = _conectate_title_sin_tildes(text).strip().lower()
+    nt = re.sub(r"\s+", " ", nt)
     # King Lottery: Conectate/LD publican «Día» / «Noche» (antes «12:30» / «7:30» en HTML).
     if "king lottery" in nt or nt.startswith("king lottery"):
         if "noche" in nt or "7:30" in nt or "7.30" in nt:

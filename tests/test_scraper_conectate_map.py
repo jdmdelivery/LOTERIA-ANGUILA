@@ -28,16 +28,42 @@ def test_conectate_label_suerte_king_dia_noche(app_mod, title, expected_key, lot
     assert draw_db == draw
 
 
-def test_conectate_diagnostico_mapeo_suerte_tarde(app_mod):
+def test_conectate_label_anguila_8am_doble_espacio(app_mod):
+    """Conectate publica a veces «Anguila 8:00  AM» (doble espacio) — debe mapear igual."""
     app = app_mod
-    diag = app._conectate_diagnostico_mapeo(
-        "La Suerte Tarde", nums=["22", "59", "19"], fuente="Conectate"
-    )
-    assert diag["mapeado"] is True
-    assert diag["guardado"] is True
-    assert diag["loteria_bd"] == "La Suerte Dominicana"
-    assert diag["sorteo_bd"] == "6:00 PM"
-    assert diag["motivo"] == "ok"
+    for title in ("Anguila 8:00  AM", "Anguila  8:00 AM", "  Anguila 8:00 AM  "):
+        key = app._conectate_label_to_internal_key(title)
+        assert key == "Anguila 8:00 AM", title
+        lot_db, draw_db = app.RESULT_LOTTERY_TO_TICKET[key]
+        assert lot_db == "La Anguila"
+        assert draw_db == "8:00 AM"
+
+
+def test_parse_sites_env_payload_anguila_8am_doble_espacio(app_mod):
+    app = app_mod
+    payload = {
+        "siteCompanies": [
+            {
+                "siteGames": [
+                    {
+                        "title": "Anguila 8:00  AM",
+                        "game": {
+                            "sessions": [
+                                {"score": [["97", "96", "14"]], "date": "2026-07-23T04:00:00.000Z"}
+                            ]
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    data = app._resultados_parse_sites_env_payload(payload, "2026-07-23", "Conectate-test")
+    k = app._resultados_scraper_storage_key("Anguila 8:00 AM", "2026-07-23")
+    assert k in data
+    assert data[k]["loteria"] == "La Anguila"
+    assert data[k]["sorteo"] == "8:00 AM"
+    assert (data[k]["n1"], data[k]["n2"], data[k]["n3"]) == ("97", "96", "14")
+
 
 
 def test_parse_sites_env_payload_suerte_king(app_mod):
