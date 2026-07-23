@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ganadores</title>
+</head>
+<body style="font-family:system-ui,sans-serif;max-width:720px;margin:48px auto;padding:16px">
+{% for msg in get_flashed_messages() %}
+<p style="background:#fef9c3;padding:10px 12px;border-radius:8px;border:1px solid #facc15">{{ msg }}</p>
+{% endfor %}
+<h1 style="color:#002D62">Ganadores</h1>
+<form method="get" action="/ganadores" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-bottom:20px;">
+    <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;">Desde</label>
+        <input type="date" name="desde" value="{{ desde }}" style="padding:8px;">
+    </div>
+    <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;">Hasta</label>
+        <input type="date" name="hasta" value="{{ hasta }}" style="padding:8px;">
+    </div>
+    <button type="submit" style="padding:10px 14px;background:#002D62;color:white;border:none;border-radius:8px;font-weight:700;cursor:pointer;">Filtrar</button>
+</form>
+{% if ganadores %}
+    {% for g in ganadores %}
+        <p style="margin:8px 0;line-height:1.5">{{ g.lottery }} {{ g.draw }} - {{ g.numero }} - RD${{ g.premio }}</p>
+    {% endfor %}
+{% else %}
+    <p>No hay tickets ganadores</p>
+{% endif %}
+<p style="margin-top:28px"><a href="/" style="color:#002D62">← Volver</a></p>
+</body>
+</html>

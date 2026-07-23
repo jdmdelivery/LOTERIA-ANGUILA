@@ -1,33 +1,254 @@
-@page { size: 58mm auto; margin: 0; }
+@page {
+  size: 58mm auto;
+  margin: 0;
+}
 html {
-  height: auto; margin: 0; padding: 0; background: #fff; color: #000;
-  -webkit-print-color-adjust: exact; print-color-adjust: exact;
-  overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  background: #fff;
+  color: #000;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  /* WebView: scroll del documento (no anidar overflow) */
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
-body { margin: 0; padding: 0; background: #fff; color: #000; }
+body {
+  margin: 0;
+  padding: 0;
+  background: #fff;
+  color: #000;
+}
 body.ticket-body {
-  min-height: 100%; display: block; overflow-x: hidden; overflow-y: visible;
-  width: 100%; max-width: 100%; box-sizing: border-box;
+  /* Sin overflow:hidden ni height:100vh: en Android WebView eso bloquea el scroll */
+  min-height: 100%;
+  display: block;
+  overflow-x: hidden;
+  overflow-y: visible;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) 0 env(safe-area-inset-left, 0);
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
-.ticket-container { display: block; width: 100%; max-width: 58mm; margin: 0 auto; box-sizing: border-box; }
-.btn-print-top, #printBtn {
-  display: block; width: 100%; max-width: 58mm; margin: 0 auto 10px; padding: 14px 16px;
-  background: #000; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 800;
-  font-family: system-ui, -apple-system, sans-serif; cursor: pointer; text-align: center; box-sizing: border-box;
+.ticket-container {
+  display: block;
+  width: 100%;
+  max-width: 58mm;
+  margin: 0 auto;
+  box-sizing: border-box;
 }
-.ticket, .ticket-thermal {
-  width: 58mm; max-width: 100%; margin: 0 auto; padding: 2mm 3mm;
-  padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box;
-  font-family: "Courier New", Courier, monospace; font-size: 15px; font-weight: 700;
-  line-height: 1.35; text-align: center; color: #000; background: #fff;
+.btn-print-top,
+#printBtn {
+  display: block;
+  width: 100%;
+  max-width: 58mm;
+  margin: 0 auto 10px;
+  padding: 14px 16px;
+  background: #000;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 800;
+  font-family: system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  text-align: center;
+  box-sizing: border-box;
 }
-.header { font-size: 16px; font-weight: 900; text-align: center; }
-.line, .info, .play-row, .footer { font-size: 14px; font-weight: 700; text-align: center; }
-.jugada-title, .loteria-title { font-size: 15px; font-weight: 900; text-align: center; margin-top: 4px; }
-.total { font-size: 16px; font-weight: 900; text-align: center; margin: 4px 0; }
+.ticket-scroll {
+  /* Contenedor semántico; el scroll lo hace html/body (compatible WebView) */
+  display: block;
+  width: 100%;
+  overflow: visible;
+  -webkit-overflow-scrolling: touch;
+}
+.ticket,
+.ticket-thermal {
+  width: 58mm;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 2mm 3mm;
+  padding-bottom: calc(120px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+  font-family: "Courier New", monospace;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+  color: #000;
+  background: #fff;
+}
+.header {
+  font-size: 16px;
+  font-weight: 900;
+  text-align: center;
+}
+.line {
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.info {
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+.jugada-title {
+  font-size: 16px;
+  font-weight: 900;
+  text-align: center;
+}
+.loteria-title {
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  margin: 2px 0;
+}
+.play-row {
+  width: 38mm;
+  max-width: 100%;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 4mm;
+  font-size: 15px;
+  font-weight: 700;
+}
+.play-number {
+  text-align: right;
+}
+.play-amount {
+  text-align: left;
+}
+.total {
+  font-size: 17px;
+  font-weight: 900;
+  text-align: center;
+  margin: 2px 0;
+}
+.footer {
+  font-size: 15px;
+  font-weight: 900;
+  text-align: center;
+}
+.ticket pre,
+.ticket-thermal pre[data-print-text] {
+  display: none !important;
+}
+.no-print {
+  /* visible en pantalla; oculto al imprimir */
+}
+/* Modal Eliminar: UI HTML (WebView a menudo no muestra diálogos JS nativos) */
+.ticket-elim-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(15, 23, 42, 0.55);
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.ticket-elim-overlay.is-open {
+  display: flex;
+}
+.ticket-elim-card {
+  width: 100%;
+  max-width: 320px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-sizing: border-box;
+  color: #0f172a;
+}
+.ticket-elim-card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 800;
+}
+.ticket-elim-card p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #334155;
+}
+.ticket-elim-card label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.ticket-elim-card input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.ticket-elim-actions {
+  display: flex;
+  gap: 8px;
+}
+.ticket-elim-actions button {
+  flex: 1;
+  padding: 12px 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.ticket-elim-cancel {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.ticket-elim-ok {
+  background: #7f1d1d;
+  color: #fff;
+}
 @media print {
-  .no-print, .btn-print-top, #printBtn { display: none !important; }
-  body { margin: 0; }
-  .ticket-thermal { padding-bottom: 2mm; }
+  .no-print,
+  button,
+  .btn,
+  #printBtn,
+  .btn-print-top,
+  .ticket-elim-overlay {
+    display: none !important;
+  }
+  html,
+  body,
+  body.ticket-body {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    width: 58mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .ticket-container {
+    display: block;
+    max-width: 58mm;
+    overflow: visible;
+  }
+  .ticket-scroll {
+    overflow: visible;
+    height: auto;
+  }
+  .ticket,
+  .ticket-thermal {
+    margin: 0 auto;
+    padding: 2mm 3mm;
+    padding-bottom: 2mm;
+  }
 }

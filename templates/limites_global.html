@@ -1,0 +1,495 @@
+<style>
+:root{--bg:#0b0f1a;--card:#121a2b;--border:#2a3650;--gold:#fbbf24;--green:#22c55e;--red:#ef4444;--muted:#94a3b8;--text:#f1f5f9;--blue:#3b82f6}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:1400px;margin:0 auto;padding:16px 16px 48px}
+.hdr{text-align:center;margin-bottom:20px}
+.hdr h1{margin:0;font-size:1.5rem;background:linear-gradient(90deg,var(--gold),#fde68a);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px}
+.card h3{margin:0 0 6px;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.card .v{font-size:1.15rem;font-weight:900;color:var(--gold)}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px}
+.panel h2{margin:0 0 12px;font-size:1rem;color:#fde68a}
+.panel-accent{border-color:#ca8a04;box-shadow:0 0 0 1px rgba(251,191,36,.15)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px}
+input,select{width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f172a;color:var(--text)}
+.btn{padding:10px 14px;border:none;border-radius:10px;font-weight:800;cursor:pointer;font-size:13px}
+.btn-gold{background:linear-gradient(135deg,#ca8a04,var(--gold));color:#0f172a}
+.btn-out{background:transparent;border:2px solid var(--gold);color:var(--gold)}
+.btn-blue{background:linear-gradient(135deg,#1d4ed8,var(--blue));color:#fff;border:2px solid transparent}
+.btn-red{background:var(--red);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:middle}
+th{color:var(--muted);background:#0f172a;position:sticky;top:0;z-index:1;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.twrap{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:10px}
+.flash{padding:12px;border-radius:10px;margin-bottom:12px;font-weight:700}
+.flash-ok{background:#14532d}.flash-err{background:#7f1d1d}
+.tag{font-size:10px;padding:3px 8px;border-radius:999px;font-weight:700;display:inline-block}
+.tag-ok{background:#14532d;color:#86efac}
+.tag-off{background:#374151;color:#9ca3af}
+.tag-role{background:#1e293b;color:#cbd5e1;font-size:10px;padding:2px 6px;border-radius:6px}
+.pag{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px;font-size:12px;color:var(--muted)}
+.row-actions{display:flex;gap:4px;flex-wrap:nowrap}
+.row-actions .btn{padding:4px 8px;font-size:11px;min-width:auto}
+.hidden{display:none!important}
+#panelCajero{margin-top:0}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;max-width:400px;width:100%}
+.modal-box h3{margin:0 0 14px;color:var(--gold)}
+@media(max-width:700px){
+  .fgrid{grid-template-columns:1fr 1fr}
+  .actions .btn{flex:1 1 auto;min-width:calc(50% - 8px)}
+  th,td{font-size:11px;padding:6px 4px}
+}
+</style>
+<div class="wrap" style="background:#0b0f1a;color:#f1f5f9;min-height:80vh;padding-top:12px">
+<div class="hdr">
+<h1>🎛️ Control Global de Límites</h1>
+<p style="color:var(--muted);font-size:13px;margin:8px 0 0">Configurar · auditar · editar límites por cajero</p>
+</div>
+
+<div id="flashBox"></div>
+
+<div class="cards">
+<div class="card"><h3>Config activa</h3><div class="v" id="kpiActivo">{{ 'Sí' if usar_limites else 'No' }}</div></div>
+<div class="card"><h3>Límite por defecto</h3><div class="v">RD$ {{ '%.0f'|format(limite_default) }}</div></div>
+<div class="card"><h3>Total límites activos</h3><div class="v" id="kpiActivos">—</div></div>
+<div class="card"><h3>Cajeros con límites</h3><div class="v" id="kpiCajeros">—</div></div>
+<div class="card"><h3>Loterías config.</h3><div class="v" id="kpiLoterias">—</div></div>
+<div class="card"><h3>Números limitados</h3><div class="v" id="kpiNumeros">—</div></div>
+</div>
+
+<div class="panel">
+<h2>⚙️ Configuración global</h2>
+<label><input type="checkbox" id="chkActivar" {% if usar_limites %}checked{% endif %}> Activar control de límites en venta (POS)</label>
+<div class="actions">
+<button type="button" class="btn btn-gold" id="btnGuardarConfig">Guardar configuración</button>
+<a href="/admin/limites" class="btn btn-out" style="text-decoration:none;display:inline-block">← Límites clásico</a>
+<a href="/admin" class="btn btn-out" style="text-decoration:none;display:inline-block">Panel admin</a>
+</div>
+</div>
+
+<div class="panel">
+<h2>➕ Nuevo / editar límite</h2>
+<div class="fgrid">
+<div><label>Usuario / Banca</label><select id="fBanca">{% for b in bancas %}<option value="{{ b.id }}">{{ b.username }} ({{ b.role }}){% if b.admin_nombre %} · {{ b.admin_nombre }}{% endif %}</option>{% endfor %}</select></div>
+<div><label>Cajero específico (0 = todos)</label><select id="fCajero"><option value="0">— Todos —</option>{% for b in bancas %}<option value="{{ b.id }}">{{ b.username }} ({{ b.role }})</option>{% endfor %}</select></div>
+<div><label>Lotería</label><select id="fLottery"><option value="__TODAS__">🌎 Todas las loterías</option>{% for lot in lottery_names %}<option value="{{ lot }}">{{ lot }}</option>{% endfor %}</select></div>
+<div><label>Sorteo / horario</label><select id="fDraw"><option value="__TODOS__">🕒 Todos los horarios</option></select></div>
+<div><label>Número</label><input id="fNum" placeholder="78" maxlength="6"></div>
+<div><label>Límite RD$</label><input id="fLim" type="number" min="0" step="0.01" value="{{ limite_default }}"></div>
+<div><label>Fecha RD (vacío = todos)</label><input id="fFecha" type="date" value="{{ hoy_rd }}"></div>
+<div><label style="margin-top:18px"><input type="checkbox" id="fTodosNumeros"> Aplicar a números 00-99</label></div>
+</div>
+<div class="actions">
+<button type="button" class="btn btn-gold" id="btnGuardarLim">💾 Guardar límite</button>
+<button type="button" class="btn btn-out" id="btnAplicarLoteria">Aplicar lotería · todos sorteos (00-99)</button>
+<button type="button" class="btn btn-out" id="btnMasivoTotal">🌎 Masivo total (todo)</button>
+<button type="button" class="btn btn-blue" id="btnVerCajero">👁️ Ver límites por cajero</button>
+</div>
+</div>
+
+<div class="panel panel-accent hidden" id="panelCajero">
+<h2>👥 Límites por cajero</h2>
+<p style="font-size:12px;color:var(--muted);margin:0 0 12px">Auditoría rápida de todos los límites configurados. Paginado (máx. 100 por página).</p>
+
+<div class="fgrid">
+<div><label>🔍 Buscar número / texto</label><input id="cQ" placeholder="78, Nacional…"></div>
+<div><label>👤 Cajero / Banca</label><select id="cCajero"><option value="">Todos</option>{% for b in bancas %}<option value="{{ b.id }}">{{ b.username }} ({{ b.role }})</option>{% endfor %}</select></div>
+<div><label>🎰 Lotería</label><select id="cLot"><option value="">Todas</option>{% for lot in lottery_names %}<option value="{{ lot }}">{{ lot }}</option>{% endfor %}</select></div>
+<div><label>🕒 Sorteo</label><select id="cDraw"><option value="">Todos</option></select></div>
+<div><label>📅 Fecha límite</label><input id="cFecha" type="date"></div>
+<div><label>Estado</label><select id="cActivo"><option value="">Todos</option><option value="1" selected>Activo</option><option value="0">Inactivo</option></select></div>
+<div><label>Por página</label><select id="cPerPage"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select></div>
+</div>
+<div class="actions">
+<button type="button" class="btn btn-gold" id="cBtnBuscar">🔍 Buscar</button>
+<button type="button" class="btn btn-out" id="cBtnRefresh">🔄 Refrescar</button>
+<button type="button" class="btn btn-out" id="btnExport">📥 Exportar CSV</button>
+</div>
+
+<div class="actions" style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
+<button type="button" class="btn btn-red" id="cBtnDelCajero">🗑️ Eliminar todos del cajero</button>
+<button type="button" class="btn btn-red" id="cBtnDelFecha">🗑️ Eliminar todos de la fecha</button>
+<button type="button" class="btn btn-red" id="cBtnDelLot">🗑️ Eliminar todos de la lotería</button>
+</div>
+
+<div class="twrap" style="margin-top:14px">
+<table>
+<thead><tr>
+<th>Cajero</th><th>Lotería</th><th>Sorteo</th><th>Número</th><th>Límite</th><th>Fecha</th><th>Estado</th><th>Acciones</th>
+</tr></thead>
+<tbody id="cTblBody"><tr><td colspan="8" style="text-align:center;color:var(--muted)">Pulse «Ver límites por cajero» o Buscar</td></tr></tbody>
+</table>
+</div>
+<div class="pag">
+<button type="button" class="btn btn-out" id="cBtnPrev" style="padding:6px 12px">← Anterior</button>
+<span id="cPagInfo">—</span>
+<button type="button" class="btn btn-out" id="cBtnNext" style="padding:6px 12px">Siguiente →</button>
+</div>
+</div>
+
+<div class="panel">
+<h2>📋 Acciones masivas</h2>
+<div class="fgrid">
+<div><label>Copiar desde</label><select id="cpOrigen">{% for b in bancas %}<option value="{{ b.id }}">{{ b.username }}</option>{% endfor %}</select></div>
+<div><label>Hacia</label><select id="cpDestino">{% for b in bancas %}<option value="{{ b.id }}">{{ b.username }}</option>{% endfor %}</select></div>
+</div>
+<div class="actions">
+<button type="button" class="btn btn-out" id="btnCopiar">Copiar límites entre bancas</button>
+<button type="button" class="btn btn-out" id="btnAplicarSorteos">Mismo límite · todos sorteos</button>
+<button type="button" class="btn btn-red" id="btnResetDia">Reset config. día (fecha RD)</button>
+<label class="btn btn-out" style="cursor:pointer">Importar CSV<input type="file" id="fileImport" accept=".csv" hidden></label>
+</div>
+</div>
+
+<div id="modalEdit" class="modal-bg hidden">
+<div class="modal-box">
+<h3>✏️ Editar límite</h3>
+<input type="hidden" id="edId">
+<div style="margin-bottom:10px"><label>Cajero</label><input id="edCajero" readonly></div>
+<div class="fgrid" style="grid-template-columns:1fr 1fr">
+<div><label>Número</label><input id="edNum" readonly></div>
+<div><label>Límite RD$</label><input id="edLim" type="number" min="0" step="0.01"></div>
+<div><label>Lotería</label><input id="edLot" readonly></div>
+<div><label>Sorteo</label><input id="edDraw" readonly></div>
+<div><label>Fecha RD</label><input id="edFecha" type="date"></div>
+<div><label>Estado</label><select id="edActivo"><option value="1">Activo</option><option value="0">Inactivo</option></select></div>
+</div>
+<div class="actions" style="margin-top:14px">
+<button type="button" class="btn btn-gold" id="edSave">Guardar</button>
+<button type="button" class="btn btn-out" id="edCancel">Cancelar</button>
+</div>
+</div>
+</div>
+
+<script>
+(function(){
+var cajeroState={page:1,pages:1,total:0,items:[],open:false};
+function qs(id){return document.getElementById(id);}
+function flash(msg, ok){
+  var b=qs('flashBox'); if(!b)return;
+  b.innerHTML='<div class="flash '+(ok?'flash-ok':'flash-err')+'">'+msg+'</div>';
+  setTimeout(function(){b.innerHTML='';}, 6000);
+}
+function api(method, url, body){
+  return fetch(url, {
+    method: method,
+    credentials: 'same-origin',
+    headers: body ? {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'} : {'X-Requested-With': 'XMLHttpRequest'},
+    body: body ? JSON.stringify(body) : null
+  }).then(function(r){
+    return r.text().then(function(txt){
+      var j = {};
+      try { j = txt ? JSON.parse(txt) : {}; } catch(e) { j = {ok: false, error: txt || ('HTTP '+r.status)}; }
+      if(!r.ok && j.ok !== false) j = {ok: false, error: j.error || ('HTTP '+r.status)};
+      return j;
+    });
+  });
+}
+function bindClick(id, fn){ var el=qs(id); if(el) el.onclick=fn; }
+function fmtFecha(iso){
+  if(!iso) return 'Todos';
+  var p=iso.split('-');
+  if(p.length!==3) return iso;
+  return p[2]+'/'+p[1]+'/'+p[0];
+}
+var LIMITES_BTN_IDS=['btnGuardarLim','btnMasivoTotal','btnAplicarLoteria','btnAplicarSorteos'];
+var limitesBusy=false;
+function setLimitesBusy(on, busyText, primaryId){
+  LIMITES_BTN_IDS.forEach(function(id){
+    var el=qs(id); if(!el)return;
+    if(on){
+      if(!el.dataset.label) el.dataset.label=el.textContent;
+      el.disabled=true;
+      if(id===primaryId && busyText) el.textContent=busyText;
+    }else{
+      el.disabled=false;
+      if(el.dataset.label){ el.textContent=el.dataset.label; delete el.dataset.label; }
+    }
+  });
+}
+function postLimites(body, opts){
+  opts=opts||{};
+  if(limitesBusy){ flash('Ya hay una operación de límites en curso…', false); return Promise.resolve({ok:false, error:'busy'}); }
+  limitesBusy=true;
+  setLimitesBusy(true, opts.busyText||'Aplicando límites…', opts.btnId||'btnGuardarLim');
+  return api('POST','/api/admin/limites/global', body).finally(function(){
+    limitesBusy=false; setLimitesBusy(false);
+  });
+}
+var DRAWS_POR_LOTERIA = {{ draws_por_loteria|tojson }};
+function refrescarSorteos(selId, lotVal){
+  var sel=qs(selId||'fDraw');
+  var lot=lotVal!=null?lotVal:(qs('fLottery')?qs('fLottery').value:'');
+  var prev=sel.value;
+  sel.innerHTML='<option value="">Todos</option>';
+  if(!lot || lot==='__TODAS__') return;
+  (DRAWS_POR_LOTERIA[lot]||[]).forEach(function(d){
+    var o=document.createElement('option'); o.value=d; o.textContent=d; sel.appendChild(o);
+  });
+  if(prev) sel.value=prev;
+}
+function readLotteryDraw(){ return {lottery:qs('fLottery').value||'', draw:qs('fDraw').value||''}; }
+function buildLimiteBody(extra){
+  var ld=readLotteryDraw();
+  var bancaId=parseInt(qs('fBanca').value,10)||0;
+  var body={
+    banca_id: bancaId,
+    usuario_id: parseInt(qs('fCajero').value,10)||0,
+    lottery: ld.lottery, draw: ld.draw,
+    numero: (qs('fNum').value||'').trim(),
+    limite: qs('fLim').value,
+    fecha_rd: qs('fFecha').value||'',
+    activo: 1,
+    all_lotteries: ld.lottery==='__TODAS__',
+    all_draws: ld.draw==='__TODOS__',
+    aplicar_todos_numeros: !!(qs('fTodosNumeros') && qs('fTodosNumeros').checked)
+  };
+  if(extra) for(var k in extra) body[k]=extra[k];
+  return body;
+}
+function guardarLimiteClick(){
+  var body=buildLimiteBody({accion:'upsert'});
+  if(!body.banca_id){ flash('Seleccione una banca válida.', false); return; }
+  var num=(body.numero||'').trim();
+  if(num) body.aplicar_todos_numeros=false;
+  if(!body.all_lotteries && !body.all_draws && !body.aplicar_todos_numeros && !num){
+    flash('Indique un número o marque 00-99 / todas las loterías.', false); return;
+  }
+  postLimites(body, {btnId:'btnGuardarLim', busyText:'Guardando…'}).then(function(d){
+    if(d.error==='busy') return;
+    if(d.ok){
+      flash('✅ Límite guardado (total: '+(d.total||1)+')', true);
+      if(cajeroState.open) cargarCajeroTabla();
+    } else flash('Error: '+(d.error||''), false);
+  }).catch(function(){ flash('Error de red', false); });
+}
+function flashResultado(d, ok){
+  if(!ok){ flash('Error: '+(d.error||''), false); return; }
+  var msg='✅ '+(d.creados||0)+' creados';
+  if((d.actualizados||0)>0) msg+=' · ♻️ '+(d.actualizados||0)+' actualizados';
+  if(d.total) msg+=' · Total: '+d.total;
+  if(d.ms) msg+=' · '+d.ms+'ms';
+  flash(msg, true);
+}
+function buildCajeroQuery(){
+  var q='?vista=cajero&page='+cajeroState.page+'&per_page='+(qs('cPerPage').value||50);
+  if(qs('cCajero').value) q+='&banca_id='+encodeURIComponent(qs('cCajero').value);
+  if(qs('cLot').value) q+='&lottery='+encodeURIComponent(qs('cLot').value);
+  if(qs('cDraw').value) q+='&draw='+encodeURIComponent(qs('cDraw').value);
+  if(qs('cFecha').value) q+='&fecha_rd='+encodeURIComponent(qs('cFecha').value);
+  if(qs('cActivo').value!=='') q+='&activo='+encodeURIComponent(qs('cActivo').value);
+  if(qs('cQ').value.trim()) q+='&q='+encodeURIComponent(qs('cQ').value.trim());
+  return q;
+}
+function updateResumenKpis(res){
+  if(!res) return;
+  qs('kpiActivos').textContent=String(res.total_activos!=null?res.total_activos:'—');
+  qs('kpiCajeros').textContent=String(res.cajeros_con_limites!=null?res.cajeros_con_limites:'—');
+  qs('kpiLoterias').textContent=String(res.loterias_configuradas!=null?res.loterias_configuradas:'—');
+  qs('kpiNumeros').textContent=String(res.numeros_limitados!=null?res.numeros_limitados:'—');
+}
+function cargarCajeroTabla(){
+  api('GET','/api/admin/limites/global'+buildCajeroQuery()).then(function(d){
+    var tb=qs('cTblBody');
+    if(!d.ok){ tb.innerHTML='<tr><td colspan="8">Error al cargar</td></tr>'; return; }
+    cajeroState.items=d.items||[];
+    cajeroState.page=d.page||1;
+    cajeroState.pages=d.pages||1;
+    cajeroState.total=d.total||0;
+    updateResumenKpis(d.resumen);
+    qs('cPagInfo').textContent='Página '+cajeroState.page+' / '+cajeroState.pages+' · '+cajeroState.total+' límites';
+    qs('cBtnPrev').disabled=cajeroState.page<=1;
+    qs('cBtnNext').disabled=cajeroState.page>=cajeroState.pages;
+    if(!cajeroState.items.length){
+      tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--muted)">Sin límites configurados con estos filtros</td></tr>';
+      return;
+    }
+    tb.innerHTML='';
+    cajeroState.items.forEach(function(r){
+      var tr=document.createElement('tr');
+      var actCls=r.activo==1?'tag-ok':'tag-off';
+      tr.innerHTML=
+        '<td><b>'+(r.cajero_nombre||'—')+'</b> <span class="tag-role">'+(r.cajero_role||'')+'</span></td>'
+        +'<td>'+(r.lottery||'—')+'</td>'
+        +'<td>'+(r.draw||'—')+'</td>'
+        +'<td><b>'+(r.numero||'—')+'</b></td>'
+        +'<td><b style="color:var(--gold)">RD$ '+parseFloat(r.limite||0).toFixed(2)+'</b></td>'
+        +'<td>'+fmtFecha(r.fecha_rd)+'</td>'
+        +'<td><span class="tag '+actCls+'">'+(r.estado_texto||'—')+'</span></td>'
+        +'<td><div class="row-actions">'
+        +'<button type="button" class="btn btn-out" data-ed="'+r.id+'">✏️</button>'
+        +'<button type="button" class="btn btn-red" data-del="'+r.id+'">🗑️</button>'
+        +'</div></td>';
+      tr.dataset.row=JSON.stringify(r);
+      tb.appendChild(tr);
+    });
+    tb.querySelectorAll('[data-ed]').forEach(function(btn){
+      btn.onclick=function(){
+        var row=JSON.parse(btn.closest('tr').dataset.row||'{}');
+        qs('edId').value=row.id;
+        qs('edCajero').value=row.cajero_nombre||'';
+        qs('edNum').value=row.numero||'';
+        qs('edLot').value=row.lottery||'';
+        qs('edDraw').value=row.draw||'';
+        qs('edLim').value=parseFloat(row.limite||0).toFixed(2);
+        qs('edFecha').value=row.fecha_rd||'';
+        qs('edActivo').value=String(row.activo==1?1:0);
+        qs('modalEdit').classList.remove('hidden');
+      };
+    });
+    tb.querySelectorAll('[data-del]').forEach(function(btn){
+      btn.onclick=function(){
+        if(!confirm('¿Eliminar este límite?')) return;
+        api('DELETE','/api/admin/limites/global',{id:btn.getAttribute('data-del')}).then(function(x){
+          flash(x.ok?'Eliminado':'Error: '+(x.error||''), x.ok);
+          if(x.ok) cargarCajeroTabla();
+        });
+      };
+    });
+  });
+}
+function abrirPanelCajero(){
+  cajeroState.open=true;
+  qs('panelCajero').classList.remove('hidden');
+  qs('btnVerCajero').textContent='👁️ Ocultar límites por cajero';
+  cargarCajeroTabla();
+  qs('panelCajero').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function togglePanelCajero(){
+  if(cajeroState.open){
+    cajeroState.open=false;
+    qs('panelCajero').classList.add('hidden');
+    qs('btnVerCajero').textContent='👁️ Ver límites por cajero';
+  } else abrirPanelCajero();
+}
+if(qs('fLottery')) qs('fLottery').onchange=function(){ refrescarSorteos('fDraw'); };
+if(qs('cLot')) qs('cLot').onchange=function(){ refrescarSorteos('cDraw', qs('cLot').value); };
+refrescarSorteos('fDraw');
+
+bindClick('btnVerCajero', togglePanelCajero);
+bindClick('cBtnBuscar', function(){ cajeroState.page=1; cargarCajeroTabla(); });
+bindClick('cBtnRefresh', cargarCajeroTabla);
+bindClick('cBtnPrev', function(){ if(cajeroState.page>1){ cajeroState.page--; cargarCajeroTabla(); } });
+bindClick('cBtnNext', function(){ if(cajeroState.page<cajeroState.pages){ cajeroState.page++; cargarCajeroTabla(); } });
+bindClick('cBtnDelCajero', function(){
+  var bid=qs('cCajero').value;
+  if(!bid){ flash('Seleccione un cajero en el filtro', false); return; }
+  if(!confirm('¿Eliminar TODOS los límites de este cajero?')) return;
+  api('POST','/api/admin/limites/global',{accion:'eliminar_cajero', banca_id:parseInt(bid,10)}).then(function(d){
+    flash(d.ok?('Eliminados: '+(d.borrados||0)):'Error: '+(d.error||''), d.ok);
+    if(d.ok) cargarCajeroTabla();
+  });
+});
+bindClick('cBtnDelFecha', function(){
+  var f=qs('cFecha').value;
+  if(!f){ flash('Seleccione una fecha en el filtro', false); return; }
+  var msg='¿Eliminar todos los límites de la fecha '+fmtFecha(f)+'?';
+  var bid=qs('cCajero').value;
+  if(bid) msg='¿Eliminar límites de esa fecha solo para el cajero seleccionado?';
+  if(!confirm(msg)) return;
+  var body={accion:'eliminar_fecha', fecha_rd:f};
+  if(bid) body.banca_id=parseInt(bid,10);
+  api('POST','/api/admin/limites/global', body).then(function(d){
+    flash(d.ok?('Eliminados: '+(d.borrados||0)):'Error: '+(d.error||''), d.ok);
+    if(d.ok) cargarCajeroTabla();
+  });
+});
+bindClick('cBtnDelLot', function(){
+  var lot=qs('cLot').value;
+  if(!lot){ flash('Seleccione una lotería en el filtro', false); return; }
+  if(!confirm('¿Eliminar todos los límites de '+lot+'?')) return;
+  var body={accion:'eliminar_loteria', lottery:lot};
+  if(qs('cDraw').value) body.draw=qs('cDraw').value;
+  if(qs('cCajero').value) body.banca_id=parseInt(qs('cCajero').value,10);
+  api('POST','/api/admin/limites/global', body).then(function(d){
+    flash(d.ok?('Eliminados: '+(d.borrados||0)):'Error: '+(d.error||''), d.ok);
+    if(d.ok) cargarCajeroTabla();
+  });
+});
+bindClick('edCancel', function(){ qs('modalEdit').classList.add('hidden'); });
+bindClick('edSave', function(){
+  api('POST','/api/admin/limites/global',{
+    accion:'editar', id:parseInt(qs('edId').value,10),
+    limite:qs('edLim').value, fecha_rd:qs('edFecha').value||'',
+    activo:parseInt(qs('edActivo').value,10)
+  }).then(function(d){
+    flash(d.ok?'Límite actualizado':'Error: '+(d.error||''), d.ok);
+    if(d.ok){ qs('modalEdit').classList.add('hidden'); cargarCajeroTabla(); }
+  });
+});
+bindClick('btnGuardarLim', guardarLimiteClick);
+bindClick('btnAplicarLoteria', function(){
+  var body=buildLimiteBody({accion:'aplicar_loteria', all_draws:true, aplicar_todos_numeros:true});
+  if(body.all_lotteries){ flash('Seleccione una lotería específica', false); return; }
+  if(!body.banca_id){ flash('Seleccione una banca.', false); return; }
+  postLimites(body, {btnId:'btnAplicarLoteria'}).then(function(d){
+    if(d.error==='busy') return;
+    flashResultado(d, d.ok); if(d.ok && cajeroState.open) cargarCajeroTabla();
+  });
+});
+bindClick('btnMasivoTotal', function(){
+  if(!confirm('¿Aplicar a TODAS las loterías y horarios? (usa 00-99 si marcó la casilla)')) return;
+  var body=buildLimiteBody({accion:'aplicar_masivo'});
+  body.all_lotteries=true; body.all_draws=true;
+  if(!body.banca_id){ flash('Seleccione una banca.', false); return; }
+  postLimites(body, {btnId:'btnMasivoTotal'}).then(function(d){
+    if(d.error==='busy') return;
+    flashResultado(d, d.ok); if(d.ok && cajeroState.open) cargarCajeroTabla();
+  });
+});
+bindClick('btnAplicarSorteos', function(){
+  var body=buildLimiteBody({accion:'aplicar_todos_sorteos', all_draws:true});
+  if(!body.banca_id){ flash('Seleccione una banca.', false); return; }
+  postLimites(body, {btnId:'btnAplicarSorteos'}).then(function(d){
+    if(d.error==='busy') return;
+    flashResultado(d, d.ok); if(d.ok && cajeroState.open) cargarCajeroTabla();
+  });
+});
+bindClick('btnCopiar', function(){
+  api('POST','/api/admin/limites/global',{accion:'copiar_banca', banca_origen:parseInt(qs('cpOrigen').value,10), banca_destino:parseInt(qs('cpDestino').value,10)}).then(function(d){
+    flash(d.ok?('Copiados: '+(d.copiados||0)):'Error', d.ok);
+    if(d.ok && cajeroState.open) cargarCajeroTabla();
+  });
+});
+bindClick('btnResetDia', function(){
+  if(!confirm('¿Borrar límites configurados para la fecha RD?')) return;
+  api('POST','/api/admin/limites/global',{accion:'reset_dia', fecha_rd:qs('cFecha').value||'{{ hoy_rd }}'}).then(function(d){
+    flash(d.ok?('Reset: '+(d.borrados||0)):'Error', d.ok);
+    if(d.ok && cajeroState.open) cargarCajeroTabla();
+  });
+});
+bindClick('btnGuardarConfig', function(){
+  var btn=qs('btnGuardarConfig'); if(btn) btn.disabled=true;
+  api('POST','/api/admin/limites/global',{accion:'config', usar_limites: qs('chkActivar').checked}).then(function(d){
+    flash(d.ok?'Config guardada':'Error: '+(d.error||''), d.ok);
+    if(d.ok) qs('kpiActivo').textContent=qs('chkActivar').checked?'Sí':'No';
+  }).finally(function(){ if(btn) btn.disabled=false; });
+});
+bindClick('btnExport', function(){
+  window.location='/api/admin/limites/export.csv?vista=cajero'
+    +(qs('cCajero').value?'&banca_id='+qs('cCajero').value:'')
+    +(qs('cLot').value?'&lottery='+encodeURIComponent(qs('cLot').value):'');
+});
+if(qs('fileImport')){
+  qs('fileImport').onchange=function(){
+    var fd=new FormData(); fd.append('file', qs('fileImport').files[0]);
+    fetch('/api/admin/limites/import.csv',{method:'POST', credentials:'same-origin', body:fd})
+      .then(function(r){return r.json();}).then(function(d){
+        flash(d.ok?('Importados: '+d.importados):'Error', d.ok);
+        if(d.ok && cajeroState.open) cargarCajeroTabla();
+      });
+  };
+}
+// Cargar resumen KPI al iniciar (sin abrir panel)
+api('GET','/api/admin/limites/global?vista=cajero&per_page=1&page=1&activo=1').then(function(d){
+  if(d.ok) updateResumenKpis(d.resumen);
+});
+})();
+</script>
+</div>

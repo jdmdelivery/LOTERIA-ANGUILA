@@ -1,428 +1,351 @@
 # -*- coding: utf-8 -*-
-"""Base de datos JDM Anguila (SQLite local / PostgreSQL en Render)."""
+"""
+Conexión PostgreSQL profesional para Render:
+- Pool con get_db() timeout 3s (no bloquea infinito)
+- /health usa solo caché (HEALTH_DB_CACHE_SEC), sin tocar PostgreSQL
+- test_connection() solo para /api/db_probe y refresh explícito
+"""
 from __future__ import annotations
 
-import json
+import logging
 import os
-import sqlite3
-from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Iterator, Optional
-from urllib.parse import urlparse
+import sys
+import threading
+import time
+import traceback
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from werkzeug.security import generate_password_hash
+log = logging.getLogger(__name__)
 
-import config
+_PG_POOL = None
+_PG_POOL_LOCK = None
+_DB_READY_CACHE = {"ts": 0.0, "ok": True}
 
-_pg = None
-if config.DATABASE_URL:
+
+def _health_db_cache_sec() -> float:
     try:
-        import psycopg2
-        import psycopg2.extras
-
-        _pg = psycopg2
-    except ImportError:
-        _pg = None
+        return max(5.0, min(300.0, float(os.environ.get("HEALTH_DB_CACHE_SEC", "30"))))
+    except (TypeError, ValueError):
+        return 30.0
 
 
-def _is_postgres() -> bool:
-    return bool(config.DATABASE_URL and _pg is not None)
+def _get_lock():
+    global _PG_POOL_LOCK
+    if _PG_POOL_LOCK is None:
+        _PG_POOL_LOCK = threading.Lock()
+    return _PG_POOL_LOCK
 
 
-def _pg_dsn() -> str:
-    url = config.DATABASE_URL
+def database_url() -> str:
+    url = (os.environ.get("DATABASE_URL") or "").strip()
     if url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://") :]
+        url = url.replace("postgres://", "postgresql://", 1)
     return url
 
 
-class _SQLiteRow(sqlite3.Row):
-    pass
+def pgsslmode() -> str:
+    url = database_url()
+    if not url:
+        return (os.environ.get("PGSSLMODE") or "").strip()
+    try:
+        q = dict(parse_qsl(urlparse(url).query))
+        if q.get("sslmode"):
+            return str(q.get("sslmode") or "")
+    except Exception:
+        pass
+    return (os.environ.get("PGSSLMODE") or "").strip()
 
 
-def _dict_factory(cursor, row):
-    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+def _with_sslmode(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        q = dict(parse_qsl(parsed.query))
+        if q.get("sslmode"):
+            return url
+        sslm = (os.environ.get("PGSSLMODE") or "").strip()
+        if not sslm:
+            return url
+        q["sslmode"] = sslm
+        return urlunparse(parsed._replace(query=urlencode(q)))
+    except Exception:
+        return url
 
 
-@contextmanager
-def get_conn() -> Iterator[Any]:
-    if _is_postgres():
-        conn = _pg.connect(_pg_dsn())
+def _import_psycopg2_fresh():
+    import importlib
+
+    mod = sys.modules.get("psycopg2")
+    if mod is not None and not hasattr(mod, "connect"):
         try:
-            yield conn
-            conn.commit()
+            del sys.modules["psycopg2"]
         except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    else:
-        os.makedirs(os.path.dirname(config.SQLITE_PATH) or ".", exist_ok=True)
-        conn = sqlite3.connect(config.SQLITE_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+            pass
+        for k in list(sys.modules.keys()):
+            if k.startswith("psycopg2."):
+                try:
+                    del sys.modules[k]
+                except Exception:
+                    pass
+    return importlib.import_module("psycopg2")
 
 
-def _exec(conn, sql: str, params: tuple = ()):
-    if _is_postgres():
-        sql = sql.replace("?", "%s")
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        return cur
-    return conn.execute(sql, params)
+def _get_db_timeout_sec() -> float:
+    try:
+        return max(1.0, min(10.0, float(os.environ.get("GET_DB_TIMEOUT_SEC", "3"))))
+    except (TypeError, ValueError):
+        return 3.0
 
 
-def _fetchone(conn, sql: str, params: tuple = ()) -> Optional[dict]:
-    cur = _exec(conn, sql, params)
-    row = cur.fetchone()
-    if row is None:
-        return None
-    if _is_postgres():
-        cols = [d[0] for d in cur.description]
-        return dict(zip(cols, row))
-    return dict(row)
+def _pool_config():
+    try:
+        minconn = int(os.environ.get("DB_POOL_MINCONN", "1"))
+    except (TypeError, ValueError):
+        minconn = 1
+    try:
+        maxconn = int(os.environ.get("DB_POOL_MAXCONN", "20"))
+    except (TypeError, ValueError):
+        maxconn = 20
+    try:
+        connect_timeout = int(os.environ.get("DB_CONNECT_TIMEOUT_SECONDS", "5"))
+    except (TypeError, ValueError):
+        connect_timeout = 5
+    threaded = (os.environ.get("DB_POOL_THREADED", "1") or "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    return minconn, maxconn, connect_timeout, threaded
 
 
-def _fetchall(conn, sql: str, params: tuple = ()) -> list[dict]:
-    cur = _exec(conn, sql, params)
-    rows = cur.fetchall()
-    if _is_postgres():
-        cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in rows]
-    return [dict(r) for r in rows]
+def update_db_ready_cache(ok: bool):
+    """Actualiza caché de salud (llamar desde db_probe / login exitoso, no desde /health)."""
+    _DB_READY_CACHE["ts"] = time.monotonic()
+    _DB_READY_CACHE["ok"] = bool(ok)
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-def init_db() -> None:
-    ddl_sqlite = """
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS branches (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      address TEXT,
-      phone TEXT
-    );
-    CREATE TABLE IF NOT EXISTS cash_registers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      branch_id INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      balance REAL NOT NULL DEFAULT 0,
-      FOREIGN KEY(branch_id) REFERENCES branches(id)
-    );
-    CREATE TABLE IF NOT EXISTS tickets (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      public_number TEXT UNIQUE NOT NULL,
-      security_code TEXT UNIQUE NOT NULL,
-      branch_id INTEGER NOT NULL,
-      cash_register_id INTEGER NOT NULL,
-      cashier_id INTEGER NOT NULL,
-      sold_at TEXT NOT NULL,
-      draw_date TEXT NOT NULL,
-      sorteo_code TEXT NOT NULL,
-      status TEXT NOT NULL,
-      total REAL NOT NULL,
-      reprint_count INTEGER NOT NULL DEFAULT 0,
-      ip TEXT,
-      FOREIGN KEY(branch_id) REFERENCES branches(id),
-      FOREIGN KEY(cash_register_id) REFERENCES cash_registers(id),
-      FOREIGN KEY(cashier_id) REFERENCES users(id)
-    );
-    CREATE TABLE IF NOT EXISTS ticket_lines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL,
-      modality TEXT NOT NULL,
-      numbers TEXT NOT NULL,
-      amount REAL NOT NULL,
-      snapshot_json TEXT NOT NULL,
-      prize_amount REAL NOT NULL DEFAULT 0,
-      prize_status TEXT NOT NULL DEFAULT 'NONE',
-      processed_winner INTEGER NOT NULL DEFAULT 0,
-      prize_detail_json TEXT,
-      FOREIGN KEY(ticket_id) REFERENCES tickets(id)
-    );
-    CREATE TABLE IF NOT EXISTS draw_results (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sorteo_code TEXT NOT NULL,
-      draw_date TEXT NOT NULL,
-      primera TEXT,
-      segunda TEXT,
-      tercera TEXT,
-      status TEXT NOT NULL,
-      source TEXT,
-      response_hash TEXT,
-      first_read_json TEXT,
-      second_read_json TEXT,
-      confirmed_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      UNIQUE(sorteo_code, draw_date)
-    );
-    CREATE TABLE IF NOT EXISTS prize_payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      payment_uid TEXT UNIQUE NOT NULL,
-      ticket_id INTEGER NOT NULL,
-      user_id INTEGER NOT NULL,
-      cash_register_id INTEGER NOT NULL,
-      branch_id INTEGER NOT NULL,
-      amount REAL NOT NULL,
-      paid_at TEXT NOT NULL,
-      observation TEXT,
-      ip TEXT,
-      result_snapshot_json TEXT,
-      receipt_json TEXT,
-      FOREIGN KEY(ticket_id) REFERENCES tickets(id)
-    );
-    CREATE TABLE IF NOT EXISTS reprint_audit (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL,
-      user_id INTEGER NOT NULL,
-      reason TEXT,
-      created_at TEXT NOT NULL,
-      ip TEXT,
-      kind TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS collector_health (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sorteo_code TEXT UNIQUE NOT NULL,
-      last_run_at TEXT,
-      status TEXT,
-      last_error TEXT,
-      response_hash TEXT
-    );
-    CREATE TABLE IF NOT EXISTS admin_notifications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      message TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      read_flag INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS cash_movements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      cash_register_id INTEGER NOT NULL,
-      kind TEXT NOT NULL,
-      amount REAL NOT NULL,
-      ticket_id INTEGER,
-      payment_id INTEGER,
-      user_id INTEGER,
-      created_at TEXT NOT NULL,
-      note TEXT
-    );
-    CREATE TABLE IF NOT EXISTS collector_locks (
-      sorteo_code TEXT NOT NULL,
-      draw_date TEXT NOT NULL,
-      locked_at TEXT NOT NULL,
-      PRIMARY KEY (sorteo_code, draw_date)
-    );
+def db_ready_cached():
     """
-    with get_conn() as conn:
-        if _is_postgres():
-            _init_postgres(conn)
-        else:
-            conn.executescript(ddl_sqlite)
-        _seed(conn)
+    Valor fresco si último refresh fue hace < HEALTH_DB_CACHE_SEC.
+    None si expiró (no abre conexión; usar db_ready_for_health() en /health).
+    """
+    now = time.monotonic()
+    ts = float(_DB_READY_CACHE.get("ts") or 0.0)
+    if ts > 0 and (now - ts) < _health_db_cache_sec():
+        return bool(_DB_READY_CACHE.get("ok"))
+    return None
 
 
-def _init_postgres(conn) -> None:
-    stmts = [
-        """CREATE TABLE IF NOT EXISTS users (
-          id SERIAL PRIMARY KEY,
-          username TEXT UNIQUE NOT NULL,
-          password_hash TEXT NOT NULL,
-          role TEXT NOT NULL,
-          active INTEGER NOT NULL DEFAULT 1,
-          created_at TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS branches (
-          id SERIAL PRIMARY KEY,
-          name TEXT NOT NULL,
-          address TEXT,
-          phone TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS cash_registers (
-          id SERIAL PRIMARY KEY,
-          branch_id INTEGER NOT NULL REFERENCES branches(id),
-          name TEXT NOT NULL,
-          balance DOUBLE PRECISION NOT NULL DEFAULT 0
-        )""",
-        """CREATE TABLE IF NOT EXISTS tickets (
-          id SERIAL PRIMARY KEY,
-          public_number TEXT UNIQUE NOT NULL,
-          security_code TEXT UNIQUE NOT NULL,
-          branch_id INTEGER NOT NULL,
-          cash_register_id INTEGER NOT NULL,
-          cashier_id INTEGER NOT NULL,
-          sold_at TEXT NOT NULL,
-          draw_date TEXT NOT NULL,
-          sorteo_code TEXT NOT NULL,
-          status TEXT NOT NULL,
-          total DOUBLE PRECISION NOT NULL,
-          reprint_count INTEGER NOT NULL DEFAULT 0,
-          ip TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS ticket_lines (
-          id SERIAL PRIMARY KEY,
-          ticket_id INTEGER NOT NULL REFERENCES tickets(id),
-          modality TEXT NOT NULL,
-          numbers TEXT NOT NULL,
-          amount DOUBLE PRECISION NOT NULL,
-          snapshot_json TEXT NOT NULL,
-          prize_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
-          prize_status TEXT NOT NULL DEFAULT 'NONE',
-          processed_winner INTEGER NOT NULL DEFAULT 0,
-          prize_detail_json TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS draw_results (
-          id SERIAL PRIMARY KEY,
-          sorteo_code TEXT NOT NULL,
-          draw_date TEXT NOT NULL,
-          primera TEXT,
-          segunda TEXT,
-          tercera TEXT,
-          status TEXT NOT NULL,
-          source TEXT,
-          response_hash TEXT,
-          first_read_json TEXT,
-          second_read_json TEXT,
-          confirmed_at TEXT,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          UNIQUE(sorteo_code, draw_date)
-        )""",
-        """CREATE TABLE IF NOT EXISTS prize_payments (
-          id SERIAL PRIMARY KEY,
-          payment_uid TEXT UNIQUE NOT NULL,
-          ticket_id INTEGER NOT NULL,
-          user_id INTEGER NOT NULL,
-          cash_register_id INTEGER NOT NULL,
-          branch_id INTEGER NOT NULL,
-          amount DOUBLE PRECISION NOT NULL,
-          paid_at TEXT NOT NULL,
-          observation TEXT,
-          ip TEXT,
-          result_snapshot_json TEXT,
-          receipt_json TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS reprint_audit (
-          id SERIAL PRIMARY KEY,
-          ticket_id INTEGER NOT NULL,
-          user_id INTEGER NOT NULL,
-          reason TEXT,
-          created_at TEXT NOT NULL,
-          ip TEXT,
-          kind TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS collector_health (
-          id SERIAL PRIMARY KEY,
-          sorteo_code TEXT UNIQUE NOT NULL,
-          last_run_at TEXT,
-          status TEXT,
-          last_error TEXT,
-          response_hash TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS admin_notifications (
-          id SERIAL PRIMARY KEY,
-          level TEXT NOT NULL,
-          message TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          read_flag INTEGER NOT NULL DEFAULT 0
-        )""",
-        """CREATE TABLE IF NOT EXISTS cash_movements (
-          id SERIAL PRIMARY KEY,
-          cash_register_id INTEGER NOT NULL,
-          kind TEXT NOT NULL,
-          amount DOUBLE PRECISION NOT NULL,
-          ticket_id INTEGER,
-          payment_id INTEGER,
-          user_id INTEGER,
-          created_at TEXT NOT NULL,
-          note TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS collector_locks (
-          sorteo_code TEXT NOT NULL,
-          draw_date TEXT NOT NULL,
-          locked_at TEXT NOT NULL,
-          PRIMARY KEY (sorteo_code, draw_date)
-        )""",
-    ]
-    cur = conn.cursor()
-    for s in stmts:
-        cur.execute(s)
+def db_ready_for_health() -> bool:
+    """
+    Solo para GET /health: nunca abre PostgreSQL ni pool.
+    Si el caché expiró, devuelve el último valor conocido (estable).
+    """
+    fresh = db_ready_cached()
+    if fresh is not None:
+        return fresh
+    return bool(_DB_READY_CACHE.get("ok", True))
 
 
-def _seed(conn) -> None:
-    u = _fetchone(conn, "SELECT id FROM users WHERE username = ?", (config.ADMIN_USER,))
-    if not u:
-        _exec(
-            conn,
-            "INSERT INTO users (username, password_hash, role, active, created_at) VALUES (?,?,?,?,?)",
-            (
-                config.ADMIN_USER,
-                generate_password_hash(config.ADMIN_PASSWORD),
-                "admin",
-                1,
-                now_iso(),
-            ),
+def init_pool(force_reinit: bool = False):
+    global _PG_POOL
+    url = database_url()
+    if not url:
+        return None
+    url = _with_sslmode(url)
+    minconn, maxconn, connect_timeout, threaded = _pool_config()
+
+    with _get_lock():
+        if _PG_POOL is not None and not force_reinit:
+            return _PG_POOL
+        if force_reinit and _PG_POOL is not None:
+            try:
+                _PG_POOL.closeall()
+            except Exception:
+                pass
+            _PG_POOL = None
+
+        log.info("[DB] Pool initializing threaded=%s min=%s max=%s", threaded, minconn, maxconn)
+        try:
+            psycopg2 = _import_psycopg2_fresh()
+            from psycopg2 import extras
+            from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
+
+            pool_cls = ThreadedConnectionPool if threaded else SimpleConnectionPool
+            _PG_POOL = pool_cls(
+                minconn,
+                maxconn,
+                dsn=url,
+                cursor_factory=extras.RealDictCursor,
+                connect_timeout=connect_timeout,
+            )
+            log.info("[DB] Pool initialized class=%s", pool_cls.__name__)
+            return _PG_POOL
+        except Exception as e:
+            log.error(
+                "[DB] Pool init failed err=%s sslmode=%s tb=%s",
+                e,
+                pgsslmode(),
+                traceback.format_exc(limit=6).replace("\n", " | "),
+            )
+            _PG_POOL = None
+            return None
+
+
+def reconnect(clear_health_cache: bool = False):
+    """
+    Recrea el pool. NO invalidar caché de /health salvo diagnóstico explícito (db_probe).
+    """
+    log.info("[DB] Reconnecting...")
+    if clear_health_cache:
+        try:
+            _DB_READY_CACHE["ts"] = 0.0
+            _DB_READY_CACHE["ok"] = False
+        except Exception:
+            pass
+    return init_pool(force_reinit=True)
+
+
+def _pool_getconn_timed(pool, timeout_sec=None):
+    if pool is None:
+        return None, "no_pool"
+    timeout_sec = _get_db_timeout_sec() if timeout_sec is None else float(timeout_sec)
+    box = {"conn": None, "err": None}
+
+    def _run():
+        try:
+            box["conn"] = pool.getconn()
+        except Exception as exc:
+            box["err"] = exc
+
+    th = threading.Thread(target=_run, name="db_pool_getconn", daemon=True)
+    th.start()
+    th.join(timeout=timeout_sec)
+    if th.is_alive():
+        return None, "timeout"
+    if box["err"] is not None:
+        return None, box["err"]
+    return box["conn"], None
+
+
+def get_db():
+    """
+    Conexión del pool (timeout 3s). reconnect() solo tras fallo getconn, sin tumbar health cache.
+    """
+    if not database_url():
+        return None
+
+    timeout = _get_db_timeout_sec()
+    pool = init_pool(force_reinit=False)
+    if pool is None:
+        pool = init_pool(force_reinit=True)
+    if pool is None:
+        log.error("[DB] get_db no pool")
+        return None
+
+    conn, err = _pool_getconn_timed(pool, timeout)
+    if conn is not None:
+        log.debug("[DB] Connected (pooled)")
+        return conn
+
+    if err == "timeout":
+        log.warning("[DB] get_db timeout after %.1fs", timeout)
+    else:
+        log.warning("[DB] getconn failed err=%s", err)
+
+    reconnect(clear_health_cache=False)
+    pool = init_pool(force_reinit=False)
+    if pool is None:
+        log.error("[DB] get_db retry no pool")
+        return None
+
+    conn2, err2 = _pool_getconn_timed(pool, timeout)
+    if conn2 is not None:
+        log.debug("[DB] Connected (pooled) after reconnect")
+        return conn2
+
+    log.error("[DB] get_db failed after reconnect err=%s", err2)
+    return None
+
+
+def put_db(conn):
+    global _PG_POOL
+    if conn is None:
+        return
+    with _get_lock():
+        pool = _PG_POOL
+    if not pool:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+    try:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        pool.putconn(conn)
+    except Exception:
+        try:
+            pool.putconn(conn, close=True)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def refresh_db_ready_from_db():
+    """Abre conexión directa (no pool) y actualiza caché. Solo db_probe / admin."""
+    ok, _info = test_connection()
+    update_db_ready_cache(ok)
+    return bool(ok)
+
+
+def db_ready() -> bool:
+    """Compat: devuelve caché fresca o último valor (no abre PG)."""
+    return db_ready_for_health()
+
+
+def test_connection():
+    """Probe directo psycopg2.connect. Siempre cierra. No usar en /health."""
+    url = database_url()
+    if not url:
+        return False, {"error": "DATABASE_URL missing"}
+    conn = None
+    cur = None
+    try:
+        psycopg2 = _import_psycopg2_fresh()
+        conn = psycopg2.connect(
+            dsn=_with_sslmode(url), connect_timeout=_pool_config()[2]
         )
-    c = _fetchone(conn, "SELECT id FROM users WHERE username = ?", (config.CAJERO_USER,))
-    if not c:
-        _exec(
-            conn,
-            "INSERT INTO users (username, password_hash, role, active, created_at) VALUES (?,?,?,?,?)",
-            (
-                config.CAJERO_USER,
-                generate_password_hash(config.CAJERO_PASSWORD),
-                "cajero",
-                1,
-                now_iso(),
-            ),
-        )
-    b = _fetchone(conn, "SELECT id FROM branches LIMIT 1")
-    if not b:
-        _exec(
-            conn,
-            "INSERT INTO branches (name, address, phone) VALUES (?,?,?)",
-            ("Principal", config.BANK_ADDRESS, config.BANK_PHONE),
-        )
-        b = _fetchone(conn, "SELECT id FROM branches LIMIT 1")
-        _exec(
-            conn,
-            "INSERT INTO cash_registers (branch_id, name, balance) VALUES (?,?,?)",
-            (b["id"], "Caja 1", 0),
-        )
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.execute("SHOW server_version")
+        ver = cur.fetchone()
+        return True, {"postgres_version": str(ver[0] if ver else "")}
+    except Exception as e:
+        return False, {"error": str(e)}
+    finally:
+        try:
+            if cur is not None:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 
-def notify_admin(level: str, message: str) -> None:
-    with get_conn() as conn:
-        _exec(
-            conn,
-            "INSERT INTO admin_notifications (level, message, created_at, read_flag) VALUES (?,?,?,0)",
-            (level, message, now_iso()),
-        )
-
-
-def json_dumps(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_loads(s: Optional[str], default=None):
-    if not s:
-        return default
-    return json.loads(s)
+def psycopg2_version() -> str:
+    try:
+        mod = _import_psycopg2_fresh()
+        return str(getattr(mod, "__version__", "") or "")
+    except Exception:
+        return ""

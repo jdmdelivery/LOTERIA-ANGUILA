@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Ticket térmico 58/80mm — adaptado para JDM ANGUILA.
-Misma estructura visual de banca térmica dominicana (centrado, monoespaciado).
+Ticket térmico 58mm — banca dominicana: centrado, grande, profesional.
+HTML + CSS impresión, texto plano y ESC/POS (RawBT / Sunmi / Bluetooth / Android).
 """
 from __future__ import annotations
 
 import base64
 import html
 import os
+import re
+from collections import defaultdict
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-import config
-
-CHARS_58 = 32
-CHARS_80 = 42
+TICKET_WIDTH_MM = 58
+CHARS = 32
 
 
 class _LineKind(str, Enum):
@@ -27,11 +27,6 @@ class _LineKind(str, Enum):
     TOTAL = "total"
     FOOTER = "footer"
     BLANK = "blank"
-    WARN = "warn"
-
-
-def _chars(width_mm: int = 58) -> int:
-    return CHARS_80 if int(width_mm) >= 80 else CHARS_58
 
 
 def _cp437(text: str) -> bytes:
@@ -45,158 +40,219 @@ def _money(value) -> str:
         return "0.00"
 
 
-def _clip(text: str, width: int) -> str:
+def _clip(text: str, width: int = CHARS) -> str:
     return str(text or "")[:width]
 
 
-def _center(text: str, width: int) -> str:
+def _center(text: str, width: int = CHARS) -> str:
     return _clip(text, width).center(width)
 
 
-def _sep(width: int) -> str:
+def _sep(width: int = CHARS) -> str:
     return "-" * width
 
 
-def _lineas_venta(data: dict, width_mm: int = 58) -> Tuple[List[Tuple[str, _LineKind]], float]:
-    w = _chars(width_mm)
-    out: List[Tuple[str, _LineKind]] = []
-    if data.get("reimpresion"):
-        out.append((_center("*** REIMPRESIÓN ***", w), _LineKind.WARN))
-    out.append((_center(str(data.get("banca") or config.BANK_NAME), w), _LineKind.HEADER))
-    addr = str(data.get("direccion") or config.BANK_ADDRESS or "").strip()
-    phone = str(data.get("telefono") or config.BANK_PHONE or "").strip()
-    if addr:
-        out.append((_center(addr, w), _LineKind.META))
-    if phone:
-        out.append((_center(phone, w), _LineKind.META))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    out.append((_center("Ticket #%s" % (data.get("ticket") or ""), w), _LineKind.META))
-    out.append((_center("Fecha: %s" % (data.get("fecha") or ""), w), _LineKind.META))
-    if data.get("cajero"):
-        out.append((_center("Cajero: %s" % data.get("cajero"), w), _LineKind.META))
-    if data.get("sucursal"):
-        out.append((_center("Sucursal: %s" % data.get("sucursal"), w), _LineKind.META))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    out.append((_center(str(data.get("sorteo") or ""), w), _LineKind.LOTERIA))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
+def _hora_display(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if re.search(r"(AM|PM)", s, re.I):
+        m = re.search(r"(\d{1,2}:\d{2}\s*(?:AM|PM))", s, re.I)
+        if m:
+            parts = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)", m.group(1), re.I)
+            if parts:
+                h12 = int(parts.group(1)) % 12 or 12
+                return "%d:%02d %s" % (h12, int(parts.group(2)), parts.group(3).upper())
+            return m.group(1).upper()
+        return s.upper()
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        ap = "AM" if h < 12 else "PM"
+        h12 = h % 12 or 12
+        return "%d:%02d %s" % (h12, mi, ap)
+    return s
 
+
+def _draw_display(hora: str) -> str:
+    s = str(hora or "").strip()
+    if s.lower().startswith("domingos "):
+        s = s[9:].strip()
+    return _hora_display(s) or s
+
+
+def _lot_sorteo_line(loteria: str, hora: str) -> str:
+    lot = str(loteria or "").strip()
+    draw = _draw_display(hora)
+    if lot and draw:
+        return "%s %s" % (lot, draw)
+    return lot or draw
+
+
+def _numero_sort_key(numero: str):
+    partes = re.split(r"[-\s]+", str(numero or "").strip())
+    out = []
+    for p in partes:
+        try:
+            out.append((0, int(p)))
+        except ValueError:
+            out.append((1, p))
+    return tuple(out)
+
+
+def _jugada_linea(numero: str, monto) -> str:
+    """58  -  RD$25.00 centrado en 58mm."""
+    n = str(numero or "").strip()
+    amt = "RD$%s" % _money(monto)
+    return _center("%s  -  %s" % (n, amt))
+
+
+def _agrupar_por_loteria(jugadas: List[dict]) -> Tuple[List[dict], float]:
+    tree: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     total = 0.0
-    quiniela = [j for j in (data.get("jugadas") or []) if str(j.get("modality") or j.get("tipo") or "").upper() == "QUINIELA"]
-    pale = [j for j in (data.get("jugadas") or []) if str(j.get("modality") or j.get("tipo") or "").upper() == "PALE"]
-    if quiniela:
-        out.append((_center("QUINIELA", w), _LineKind.JUGADA))
-        for j in quiniela:
+    for j in jugadas or []:
+        lot = str(j.get("loteria") or j.get("lottery") or "").strip()
+        hora = str(j.get("hora") or j.get("draw") or "").strip()
+        num = str(j.get("numeros") or j.get("numero") or j.get("number") or "").strip()
+        try:
             monto = float(j.get("monto") or j.get("amount") or 0)
-            total += monto
-            left = str(j.get("numeros") or j.get("numero") or "")
-            right = "RD$%s" % _money(monto)
-            pad = max(1, w - len(left) - len(right))
-            out.append((_clip(left + (" " * pad) + right, w), _LineKind.PLAY))
-    if pale:
-        out.append((_center("PALÉ", w), _LineKind.JUGADA))
-        for j in pale:
-            monto = float(j.get("monto") or j.get("amount") or 0)
-            total += monto
-            left = str(j.get("numeros") or j.get("numero") or "")
-            right = "RD$%s" % _money(monto)
-            pad = max(1, w - len(left) - len(right))
-            out.append((_clip(left + (" " * pad) + right, w), _LineKind.PLAY))
+        except (TypeError, ValueError):
+            monto = 0.0
+        total += monto
+        tree[(lot, hora)].append({"numero": num, "monto": monto})
 
-    if data.get("total") is not None:
-        total = float(data.get("total"))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    out.append((_center("TOTAL              RD$%s" % _money(total), w), _LineKind.TOTAL))
-    out.append((_center("Estado: %s" % (data.get("estado") or "ACTIVO"), w), _LineKind.META))
-    out.append((_center("Código: %s" % (data.get("codigo") or data.get("security_code") or ""), w), _LineKind.META))
-    msg = str(data.get("mensaje") or config.TICKET_MESSAGE or "Conserve este ticket")
-    out.append((_center(msg, w), _LineKind.FOOTER))
+    bloques: List[dict] = []
+    for key in sorted(tree.keys(), key=lambda k: (k[0].lower(), k[1])):
+        filas = sorted(tree[key], key=lambda x: _numero_sort_key(x.get("numero")))
+        bloques.append({"encabezado": _lot_sorteo_line(key[0], key[1]), "filas": filas})
+    return bloques, total
+
+
+def _lineas_ticket_estructurado(data: dict) -> Tuple[List[Tuple[str, _LineKind]], float]:
+    bloques, total = _agrupar_por_loteria(data.get("jugadas") or [])
+    out: List[Tuple[str, _LineKind]] = []
+
+    out.append((_center("LA QUE NUNCA FALLA ANGUILA"), _LineKind.HEADER))
+    out.append((_center("NO PAGAMOS SIN TICKET"), _LineKind.HEADER))
+    out.append((_center(_sep()), _LineKind.SEP))
+
+    fecha = str(data.get("fecha") or "").strip()
+    hora = _hora_display(data.get("hora") or data.get("hora_venta") or "")
+    if fecha and hora:
+        out.append((_center("Fecha: %s Hora: %s" % (fecha, hora)), _LineKind.META))
+    elif fecha:
+        out.append((_center("Fecha: %s" % fecha), _LineKind.META))
+    elif hora:
+        out.append((_center("Hora: %s" % hora), _LineKind.META))
+
+    out.append(
+        (
+            _center(
+                "Ticket: %s ID: %s"
+                % (data.get("ticket") or "", data.get("id") or data.get("ticket") or "")
+            ),
+            _LineKind.META,
+        )
+    )
+    cajero = str(data.get("cajero") or "").strip()
+    if cajero:
+        out.append((_center("Cajero: %s" % cajero), _LineKind.META))
+
+    out.append((_center(_sep()), _LineKind.SEP))
+    out.append((_center("JUGADA:"), _LineKind.JUGADA))
+    out.append((_center(_sep()), _LineKind.SEP))
+
+    for bloque in bloques:
+        out.append((_center(bloque["encabezado"]), _LineKind.LOTERIA))
+        for fila in bloque["filas"]:
+            out.append((_jugada_linea(fila["numero"], fila["monto"]), _LineKind.PLAY))
+        out.append((_center(_sep()), _LineKind.SEP))
+
+    out.append((_center("TOTAL RD$%s" % _money(total)), _LineKind.TOTAL))
+    out.append((_center(_sep()), _LineKind.SEP))
+    out.append((_center("REVISA SU TICKET"), _LineKind.FOOTER))
+    out.append((_center("BUENA SUERTE"), _LineKind.FOOTER))
+
     return out, total
 
 
-def _lineas_premio(data: dict, width_mm: int = 58) -> List[Tuple[str, _LineKind]]:
-    w = _chars(width_mm)
-    out: List[Tuple[str, _LineKind]] = []
-    if data.get("reimpresion"):
-        out.append((_center("*** PREMIO YA PAGADO ***", w), _LineKind.WARN))
-    out.append((_center(str(data.get("banca") or config.BANK_NAME), w), _LineKind.HEADER))
-    out.append((_center("PREMIO PAGADO", w), _LineKind.HEADER))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    out.append((_center("Ticket ganador: #%s" % (data.get("ticket") or ""), w), _LineKind.META))
-    if data.get("codigo"):
-        out.append((_center("Código: %s" % data.get("codigo"), w), _LineKind.META))
-    out.append((_center("Sorteo: %s" % (data.get("sorteo") or ""), w), _LineKind.META))
-    if data.get("fecha_sorteo"):
-        out.append((_center("Fecha sorteo: %s" % data.get("fecha_sorteo"), w), _LineKind.META))
-    out.append((_center("Resultado: %s" % (data.get("resultado") or ""), w), _LineKind.LOTERIA))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    for line in data.get("lineas") or []:
-        out.append((_center(str(line.get("titulo") or ""), w), _LineKind.JUGADA))
-        out.append((_center(str(line.get("detalle") or ""), w), _LineKind.PLAY))
-    out.append((_center(_sep(w), w), _LineKind.SEP))
-    out.append((_center("TOTAL PAGADO: RD$%s" % _money(data.get("total")), w), _LineKind.TOTAL))
-    out.append((_center("Pagado por: %s" % (data.get("cajero") or ""), w), _LineKind.META))
-    out.append((_center("Fecha: %s" % (data.get("fecha_pago") or ""), w), _LineKind.META))
-    if data.get("caja"):
-        out.append((_center("Caja: %s" % data.get("caja"), w), _LineKind.META))
-    out.append((_center("Pago: %s" % (data.get("pago_uid") or ""), w), _LineKind.META))
-    out.append((_center("Firma: ______________________", w), _LineKind.FOOTER))
-    return out
+def generar_ticket(data: dict) -> str:
+    estructurado, _ = _lineas_ticket_estructurado(data)
+    parts: List[str] = []
+    for txt, kind in estructurado:
+        if kind == _LineKind.BLANK:
+            parts.append("")
+        else:
+            parts.append(txt if txt is not None else "")
+    return "\n".join(parts) + "\n"
 
 
-def generar_ticket(data: dict, width_mm: int = 58) -> str:
-    lines, _ = _lineas_venta(data, width_mm)
-    return "\n".join(t for t, _k in lines) + "\n"
+def render_ticket_html(data: dict, qr_url: Optional[str] = None) -> str:
+    """HTML semántico 58mm para navegador / impresión (sin QR)."""
+    _ = qr_url  # obsoleto; se ignora
+    bloques, total = _agrupar_por_loteria(data.get("jugadas") or [])
+    fecha = str(data.get("fecha") or "").strip()
+    hora = _hora_display(data.get("hora") or data.get("hora_venta") or "")
+    cajero = str(data.get("cajero") or "").strip()
+    ticket_pub = str(data.get("ticket") or "")
+    ticket_id = str(data.get("id") or ticket_pub)
 
+    parts: List[str] = []
+    parts.append('<div class="header">LA QUE NUNCA FALLA ANGUILA</div>')
+    parts.append('<div class="header">NO PAGAMOS SIN TICKET</div>')
+    parts.append('<div class="line">%s</div>' % html.escape(_sep()))
 
-def generar_recibo_premio(data: dict, width_mm: int = 58) -> str:
-    lines = _lineas_premio(data, width_mm)
-    return "\n".join(t for t, _k in lines) + "\n"
+    if fecha and hora:
+        parts.append(
+            '<div class="info">Fecha: %s Hora: %s</div>'
+            % (html.escape(fecha), html.escape(hora))
+        )
+    elif fecha:
+        parts.append('<div class="info">Fecha: %s</div>' % html.escape(fecha))
+    elif hora:
+        parts.append('<div class="info">Hora: %s</div>' % html.escape(hora))
 
+    parts.append(
+        '<div class="info">Ticket: %s ID: %s</div>'
+        % (html.escape(ticket_pub), html.escape(ticket_id))
+    )
+    if cajero:
+        parts.append('<div class="info">Cajero: %s</div>' % html.escape(cajero))
 
-def render_ticket_html(data: dict, width_mm: int = 58) -> str:
-    lines, total = _lineas_venta(data, width_mm)
-    parts = []
-    for txt, kind in lines:
-        cls = {
-            _LineKind.HEADER: "header",
-            _LineKind.TOTAL: "total",
-            _LineKind.FOOTER: "footer",
-            _LineKind.LOTERIA: "loteria-title",
-            _LineKind.JUGADA: "jugada-title",
-            _LineKind.WARN: "header",
-            _LineKind.PLAY: "play-row",
-            _LineKind.META: "info",
-            _LineKind.SEP: "line",
-        }.get(kind, "line")
-        parts.append('<div class="%s">%s</div>' % (cls, html.escape(txt)))
-    _ = total
+    parts.append('<div class="line">%s</div>' % html.escape(_sep()))
+    parts.append('<div class="jugada-title">JUGADA:</div>')
+    parts.append('<div class="line">%s</div>' % html.escape(_sep()))
+
+    for bloque in bloques:
+        parts.append(
+            '<div class="loteria-title">%s</div>' % html.escape(bloque["encabezado"])
+        )
+        for fila in bloque["filas"]:
+            n = html.escape(str(fila["numero"] or "").strip())
+            amt = html.escape("RD$%s" % _money(fila["monto"]))
+            parts.append(
+                '<div class="play-row">'
+                '<span class="play-number">%s  -</span>'
+                '<span class="play-amount">%s</span>'
+                "</div>" % (n, amt)
+            )
+        parts.append('<div class="line">%s</div>' % html.escape(_sep()))
+
+    parts.append('<div class="total">TOTAL RD$%s</div>' % html.escape(_money(total)))
+    parts.append('<div class="line">%s</div>' % html.escape(_sep()))
+    parts.append('<div class="footer">REVISA SU TICKET</div>')
+    parts.append('<div class="footer">BUENA SUERTE</div>')
+
     return "\n".join(parts)
 
 
-def render_premio_html(data: dict, width_mm: int = 58) -> str:
-    lines = _lineas_premio(data, width_mm)
-    parts = []
-    for txt, kind in lines:
-        cls = {
-            _LineKind.HEADER: "header",
-            _LineKind.TOTAL: "total",
-            _LineKind.FOOTER: "footer",
-            _LineKind.LOTERIA: "loteria-title",
-            _LineKind.JUGADA: "jugada-title",
-            _LineKind.WARN: "header",
-            _LineKind.PLAY: "line",
-            _LineKind.META: "info",
-            _LineKind.SEP: "line",
-        }.get(kind, "line")
-        parts.append('<div class="%s">%s</div>' % (cls, html.escape(txt)))
-    return "\n".join(parts)
-
+# --- ESC/POS ---
 
 def esc_init() -> bytes:
     return b"\x1b\x40"
 
 
-def esc_align(mode: int = 1) -> bytes:
+def esc_align(mode: int = 0) -> bytes:
     return bytes([0x1B, 0x61, max(0, min(2, mode))])
 
 
@@ -224,7 +280,13 @@ def esc_text_line(text: str) -> bytes:
 
 def _esc_linea(text: str, kind: _LineKind) -> bytes:
     buf = bytearray()
-    if kind == _LineKind.HEADER or kind == _LineKind.TOTAL or kind == _LineKind.WARN:
+    if kind == _LineKind.BLANK:
+        return esc_text_line("")
+
+    if kind == _LineKind.HEADER:
+        buf += esc_size(2, 2)
+        buf += esc_bold(True)
+    elif kind == _LineKind.TOTAL:
         buf += esc_size(2, 2)
         buf += esc_bold(True)
     elif kind in (_LineKind.JUGADA, _LineKind.LOTERIA):
@@ -233,82 +295,80 @@ def _esc_linea(text: str, kind: _LineKind) -> bytes:
     else:
         buf += esc_size(1, 1)
         buf += esc_bold(True)
+
     buf += esc_text_line(text)
     buf += esc_reset_style()
     return bytes(buf)
 
 
-def generar_ticket_escpos(data: dict, width_mm: int = 58) -> bytes:
-    lines, _ = _lineas_venta(data, width_mm)
+def qr_code_escpos(data: str, module_size: int = 10) -> bytes:
+    payload = _cp437(str(data or ""))
+    ms = max(4, min(16, int(module_size)))
+    length = len(payload) + 3
+    return (
+        b"\x1d\x28\x6b\x04\x00\x31\x41\x32\x00"
+        + b"\x1d\x28\x6b\x03\x00\x31\x43" + bytes([ms])
+        + b"\x1d\x28\x6b"
+        + bytes([length & 0xFF, (length >> 8) & 0xFF])
+        + b"\x31\x50\x30"
+        + payload
+        + b"\x1d\x28\x6b\x03\x00\x31\x51\x30"
+    )
+
+
+def generar_ticket_escpos(data: dict, qr_url: Optional[str] = None) -> bytes:
+    _ = qr_url  # obsoleto; sin QR en ticket de venta
+    estructurado, _ = _lineas_ticket_estructurado(data)
     buf = bytearray()
     buf += esc_init()
     buf += esc_align(1)
-    for txt, kind in lines:
-        buf += _esc_linea(txt, kind)
-    # QR con código de seguridad
-    code = str(data.get("codigo") or data.get("security_code") or "")
-    if code:
-        payload = _cp437(code)
-        ms = 6
-        length = len(payload) + 3
-        buf += (
-            b"\x1d\x28\x6b\x04\x00\x31\x41\x32\x00"
-            + b"\x1d\x28\x6b\x03\x00\x31\x43"
-            + bytes([ms])
-            + b"\x1d\x28\x6b"
-            + bytes([length & 0xFF, (length >> 8) & 0xFF])
-            + b"\x31\x50\x30"
-            + payload
-            + b"\x1d\x28\x6b\x03\x00\x31\x51\x30"
-        )
-    buf += esc_feed(4)
-    return bytes(buf)
-
-
-def generar_premio_escpos(data: dict, width_mm: int = 58) -> bytes:
-    lines = _lineas_premio(data, width_mm)
-    buf = bytearray()
-    buf += esc_init()
-    buf += esc_align(1)
-    for txt, kind in lines:
+    for txt, kind in estructurado:
         buf += _esc_linea(txt, kind)
     buf += esc_feed(4)
     return bytes(buf)
 
 
-def ticket_escpos_b64(data: dict, width_mm: int = 58) -> str:
-    return base64.b64encode(generar_ticket_escpos(data, width_mm)).decode("ascii")
+def ticket_escpos_b64(data: dict, qr_url: Optional[str] = None) -> str:
+    return base64.b64encode(generar_ticket_escpos(data, qr_url)).decode("ascii")
 
 
-def premio_escpos_b64(data: dict, width_mm: int = 58) -> str:
-    return base64.b64encode(generar_premio_escpos(data, width_mm)).decode("ascii")
+def generar_recibo_pago_escpos(
+    ticket_id,
+    premio,
+    cajero,
+    fecha,
+    lottery="",
+    play="",
+    numero_ganador="",
+) -> bytes:
+    buf = bytearray()
+    buf += esc_init()
+    buf += esc_align(1)
+    buf += _esc_linea("LA QUE NUNCA FALLA ANGUILA", _LineKind.HEADER)
+    buf += _esc_linea("PAGO DE PREMIO", _LineKind.JUGADA)
+    buf += _esc_linea(_sep(), _LineKind.SEP)
+    buf += _esc_linea("Ticket: %s" % ticket_id, _LineKind.META)
+    buf += _esc_linea("Cajero: %s" % cajero, _LineKind.META)
+    buf += _esc_linea("Fecha: %s" % fecha, _LineKind.META)
+    if lottery:
+        buf += _esc_linea(str(lottery).strip(), _LineKind.LOTERIA)
+    if play:
+        buf += _esc_linea("Jugada: %s" % play, _LineKind.META)
+    if numero_ganador:
+        buf += _esc_linea(str(numero_ganador), _LineKind.PLAY)
+    buf += _esc_linea(_sep(), _LineKind.SEP)
+    buf += _esc_linea("TOTAL RD$%s" % _money(premio), _LineKind.TOTAL)
+    buf += _esc_linea(_sep(), _LineKind.SEP)
+    buf += _esc_linea("PREMIO PAGADO", _LineKind.FOOTER)
+    buf += esc_feed(4)
+    return bytes(buf)
 
 
-def render_ticket_page_html(data: dict, width_mm: int = 58, kind: str = "venta") -> str:
-    body = render_premio_html(data, width_mm) if kind == "premio" else render_ticket_html(data, width_mm)
-    b64 = premio_escpos_b64(data, width_mm) if kind == "premio" else ticket_escpos_b64(data, width_mm)
-    plain = generar_recibo_premio(data, width_mm) if kind == "premio" else generar_ticket(data, width_mm)
-    mm = 80 if int(width_mm) >= 80 else 58
-    return f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>{html.escape(config.BANK_NAME)} Ticket</title>
-<link rel="stylesheet" href="/static/ticket_thermal.css"/>
-<style>@page {{ size: {mm}mm auto; margin: 0; }} .ticket-thermal {{ width: {mm}mm; }}</style>
-</head>
-<body class="ticket-body">
-<button class="btn-print-top no-print" id="printBtn" type="button">Imprimir</button>
-<div class="ticket-container">
-<div class="ticket ticket-thermal" data-ticket-id="{html.escape(str(data.get('ticket') or ''))}" data-escpos-b64="{b64}">
-{body}
-</div>
-<pre class="no-print" style="display:none" id="ticketPlain">{html.escape(plain)}</pre>
-</div>
-<script src="/static/print_ticket_app.js"></script>
-<script>document.getElementById('printBtn').addEventListener('click', function(){{ window.print(); }});</script>
-</body></html>"""
+def recibo_pago_escpos_b64(**kwargs) -> str:
+    return base64.b64encode(generar_recibo_pago_escpos(**kwargs)).decode("ascii")
 
 
-TICKET_THERMAL_CSS_PATH = os.path.join(os.path.dirname(__file__), "static", "ticket_thermal.css")
+TICKET_THERMAL_CSS = open(
+    os.path.join(os.path.dirname(__file__), "static", "ticket_thermal.css"),
+    encoding="utf-8",
+).read() if os.path.isfile(os.path.join(os.path.dirname(__file__), "static", "ticket_thermal.css")) else ""
